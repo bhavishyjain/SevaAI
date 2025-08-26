@@ -37,6 +37,14 @@ Instructions:
 5. Return JSON only. No explanations.
 6. Respond in the same language as the user is using. If it is a FAQ, provide the answer in the same language as the user.
 
+Note: Certain locations may have higher importance during festivals or events.
+If the complaint location is near such areas during those times, set "priority": "High".
+Examples:
+- Rajwada on Holi => High priority
+- MG Road on Diwali => High priority
+- Normal day in same locations => follow default keyword logic
+
+
 Examples:
 
 Input: "There is a water pipe leakage near Central Park. It's urgent!"

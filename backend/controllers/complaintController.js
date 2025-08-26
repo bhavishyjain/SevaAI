@@ -5,47 +5,32 @@ const generateTicketId = require("../utils/generateTicketId");
 const cloudinary = require("../config/cloudinary"); // optional if you want to upload images
 const mongoose = require("mongoose");
 
+const festivalEvents = require("../utils/festivalEvents.json");
+
 // Helper to get user ID from request
 function getUserIdFromReq(req) {
   return req.user?._id || req.session?.user?.id || req.currentUser?.id || null;
 }
 
-// 1️⃣ Process raw complaint (AI analysis)
+
 const processRawComplaint = async (req, res) => {
   try {
-    console.log("processRawComplaint called with body:", req.body);
-    console.log("User from req:", req.user, req.session?.user, req.currentUser);
-
     const { rawText, lat, lng } = req.body;
     const userId = getUserIdFromReq(req);
-
-    console.log("Extracted userId:", userId);
-    console.log("Extracted rawText:", rawText);
-    console.log("Extracted lat:", lat, "lng:", lng);
-
     if (!userId) return res.status(401).json({ message: "Unauthorized" });
     if (!rawText) return res.status(400).json({ message: "rawText required" });
 
-    console.log("Calling AI analyze function...");
     const ai = await analyze(rawText);
-    console.log("AI analysis result:", ai);
-
     if (!ai) return res.status(500).json({ message: "AI analysis failed" });
-    if (ai.error)
-      return res
-        .status(500)
-        .json({ message: "AI analysis error: " + ai.message });
 
     // Status query
     if (ai.type === "statusQuery") {
       const targetId = ai.complaintId || "last";
-      const complaint =
-        targetId === "last"
-          ? await Complaint.findOne({ userId }).sort({ createdAt: -1 })
-          : await Complaint.findOne({ ticketId: targetId });
+      const complaint = targetId === "last"
+        ? await Complaint.findOne({ userId }).sort({ createdAt: -1 })
+        : await Complaint.findOne({ ticketId: targetId });
 
-      if (!complaint)
-        return res.status(404).json({ message: "Complaint not found" });
+      if (!complaint) return res.status(404).json({ message: "Complaint not found" });
 
       return res.json({
         type: "statusQuery",
@@ -60,22 +45,33 @@ const processRawComplaint = async (req, res) => {
 
     // FAQ response
     if (ai.type === "faq") {
-      return res.json({
-        type: "faq",
-        answer: ai.answer || "Here's some info...",
-      });
+      return res.json({ type: "faq", answer: ai.answer || "Here's some info..." });
     }
 
     // New complaint
     if (ai.type === "newComplaint") {
+      // Determine priority with festival logic
+      let adjustedPriority = ai.priority || "Medium";
+      const today = new Date();
+
+      if (ai.locationName) {
+        festivalEvents.forEach(event => {
+          const start = new Date(event.startDate);
+          const end = new Date(event.endDate);
+          if (today >= start && today <= end && event.highPriorityLocations.includes(ai.locationName)) {
+            adjustedPriority = "High"; // Festival/event location gets high priority
+          }
+        });
+      }
+
       if (!lat || !lng) {
-        req.session.pendingComplaint = { ...ai, userId, rawText };
+        req.session.pendingComplaint = { ...ai, userId, rawText, priority: adjustedPriority };
         return res.json({
           type: "newComplaint",
           message: "Complaint detected. Awaiting coordinates.",
           department: ai.department,
           refinedText: ai.refinedText,
-          priority: ai.priority,
+          priority: adjustedPriority,
           problem: ai.refinedText,
           locationName: ai.locationName || null,
         });
@@ -91,11 +87,9 @@ const processRawComplaint = async (req, res) => {
         aiConfidence: ai.aiConfidence,
         coordinates: { lat: Number(lat), lng: Number(lng) },
         locationName: ai.locationName || null,
-        priority: ai.priority || "Medium",
+        priority: adjustedPriority, // festival-aware priority
         status: "pending",
-        history: [
-          { status: "pending", updatedBy: userId, note: "Created via AI" },
-        ],
+        history: [{ status: "pending", updatedBy: userId, note: "Created via AI" }],
       });
 
       await complaint.save();
@@ -107,16 +101,17 @@ const processRawComplaint = async (req, res) => {
         status: complaint.status,
         department: complaint.department,
         locationName: ai.locationName || null,
+        priority: adjustedPriority,
       });
     }
 
     return res.status(400).json({ message: "Could not understand request" });
   } catch (err) {
     console.error("processRawComplaint error:", err);
-    console.error("Error stack:", err.stack);
-    return res.status(500).json({ message: "Server error: " + err.message });
+    return res.status(500).json({ message: "Server error" });
   }
 };
+
 
 // 2️⃣ Confirm pending complaint
 const confirmComplaint = async (req, res) => {
